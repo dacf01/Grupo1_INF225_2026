@@ -24,14 +24,21 @@ const runMigration = async () => {
     throw new Error(`El archivo ${schemaPath} esta vacio`)
   }
 
-  const client = new Client({
-    host: dbConfig.host,
-    port: dbConfig.port,
-    database: dbConfig.database,
-    user: dbConfig.user,
-    password: dbConfig.password,
-    ssl: dbConfig.ssl,
-  })
+  const clientConfig = process.env.DATABASE_URL
+    ? {
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false } // Requerido por Render
+      }
+    : {
+        host: dbConfig.host,
+        port: dbConfig.port,
+        database: dbConfig.database,
+        user: dbConfig.user,
+        password: dbConfig.password,
+        ssl: dbConfig.ssl,
+      }
+
+  const client = new Client(clientConfig)
 
   try {
     await client.connect()
