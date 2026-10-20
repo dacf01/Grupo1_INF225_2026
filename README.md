@@ -9,7 +9,7 @@ Este es el repositorio del *Grupo 1*, cuyos integrantes son:
 * Diego Cisterna - 202023511-2
 * Sebastián Césped - 202273603-8
 
-* **Ayudante**: Josefino Pino
+* **Ayudante**: Josefina Pino
 
 
 ## Setup proyecto
