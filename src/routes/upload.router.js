@@ -32,4 +32,36 @@ router.post('/subir_informe', upload.single('pdf_documento'), async (req, res) =
     }
 } );
 
+import { cambiarEstado, ESTADOS } from '../services/estadoPostulacion.service.js';
+
+router.post('/subir_informe', upload.single('pdf_documento'), async (req, res) => {
+    if (!req.isAuthenticated() || req.user.tipo !== 'Estudiante') {
+        return res.status(403).json({ error: 'Acceso denegado' });
+    }
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No hay un archivo que subir' });
+
+        const { id_practica } = req.body;
+        const rutaRelativa = `/uploads/${req.file.filename}`;
+
+        await cambiarEstado({
+            rut: req.user.rut,                 // de la sesión, no del body
+            idPractica: id_practica,
+            nuevoEstado: ESTADOS.INFORME_ENVIADO,
+            actor: req.user.rut,
+            rutaArchivo: rutaRelativa,
+        });
+
+        const { rows } = await connection.query(
+            'SELECT * FROM practica_en_proceso WHERE rut = $1 AND id_practica = $2',
+            [req.user.rut, id_practica]);
+        res.json({ mensaje: 'Archivo enviado con éxito', datos: rows[0] });
+    } catch (error) {
+        console.error('Error en el controlador de subida:', error);
+        res.status(error.status || 500).json({ error: error.status === 409
+            ? 'Solo puedes subir el informe de una práctica aceptada.'
+            : 'Error interno al procesar el archivo.' });
+    }
+});
+
 export default router;

@@ -130,6 +130,30 @@ CREATE TABLE IF NOT EXISTS practica_en_proceso (
     FOREIGN KEY (rut_supervisor) REFERENCES Supervisor_Practica(rut) 
 );
 
+-- Fecha límite de postulación por oferta (NULL = sin vencimiento)
+ALTER TABLE practica ADD COLUMN IF NOT EXISTS fecha_cierre DATE;
+
+ALTER TABLE practica_en_proceso
+  ADD COLUMN IF NOT EXISTS fecha_postulacion   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS fecha_actualizacion TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE TABLE IF NOT EXISTS historial_estados (
+  id              SERIAL PRIMARY KEY,
+  rut             VARCHAR(12) NOT NULL,
+  id_practica     INTEGER     NOT NULL,
+  estado_anterior VARCHAR(30),
+  estado_nuevo    VARCHAR(30) NOT NULL,
+  actor           VARCHAR(20) NOT NULL,       -- rut del usuario o 'sistema'
+  motivo          TEXT,
+  fecha           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (rut, id_practica) REFERENCES practica_en_proceso(rut, id_practica) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_pep_estado      ON practica_en_proceso (estado);
+CREATE INDEX IF NOT EXISTS idx_practica_cierre ON practica (fecha_cierre);
+
+
+
 -- ============================================================================
 -- 2. INSERCIÓN DE USUARIOS BASE
 -- ============================================================================
@@ -341,3 +365,22 @@ END $$;
 -- 8. REINICIO DE LA SECUENCIA DE IDs PARA EVITAR EL ERROR 'DUPLICATE KEY'
 -- ============================================================================
 SELECT setval(pg_get_serial_sequence('practica', 'id'), COALESCE(max(id), 1)) FROM practica;
+
+-- Normativa universitaria aplicable a las prácticas.
+CREATE TABLE IF NOT EXISTS Normativa_Practica (
+    id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    horas_minimas INTEGER NOT NULL
+        CHECK (horas_minimas > 0),
+    plazo_entrega_dias INTEGER NOT NULL
+        CHECK (plazo_entrega_dias > 0),
+    requisitos_academicos TEXT NOT NULL,
+    fecha_vigencia DATE NOT NULL DEFAULT CURRENT_DATE,
+    activa BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+-- Cada oferta puede especificar requisitos y fechas propios.
+ALTER TABLE Practica
+    ADD COLUMN IF NOT EXISTS requisitos_academicos TEXT,
+    ADD COLUMN IF NOT EXISTS fecha_limite_postulacion DATE,
+    ADD COLUMN IF NOT EXISTS fecha_limite_entrega DATE;

@@ -22,7 +22,37 @@ export const crearOferta = async (req, res) => {
         if (empresa.rows.length === 0) {
             return res.status(403).json({ error: "La cuenta autenticada no tiene perfil de empresa asociado." });
         }
+            // Consultar la normativa universitaria vigente.
+    const normativaResult = await connection.query(`
+        SELECT horas_minimas, plazo_entrega_dias,
+               requisitos_academicos
+        FROM Normativa_Practica
+        WHERE activa = TRUE
+         AND fecha_vigencia <= CURRENT_DATE
+        ORDER BY fecha_vigencia DESC, id DESC
+        LIMIT 1
+    `);
 
+    if (normativaResult.rows.length === 0) {
+        return res.status(503).json({
+            error: "La normativa de prácticas no está configurada."
+        });
+    }
+
+    const normativa = normativaResult.rows[0];
+    const horas = Number(cant_horas);
+
+    if (
+        cant_horas === undefined ||
+        cant_horas === null ||
+        String(cant_horas).trim() === "" ||
+        !Number.isInteger(horas) ||
+        horas < normativa.horas_minimas
+    ) {
+        return res.status(400).json({
+            error: `La práctica debe contemplar al menos ${normativa.horas_minimas} horas.`
+        });
+    }
         // 2. Traducir la ubicación a Coordenadas GPS
         let lat = null;
         let lon = null;
@@ -35,16 +65,53 @@ export const crearOferta = async (req, res) => {
             }
         }
 
-        // 3. Insertar la práctica incluyendo Latitud y Longitud
-        const queryPractica = `
-            INSERT INTO Practica (rut_empresa, ubicacion, cargo, cant_horas, descripcion, modalidad, remuneracion, latitud, longitud)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id;
-        `;
-        const valuesPractica = [rut_empresa, ubicacion, cargo, cant_horas, descripcion, modalidad, remuneracion, lat, lon];
-        const resultPractica = await connection.query(queryPractica, valuesPractica);
-        
-        const id_practica = resultPractica.rows[0].id;
+    // 3. Insertar la práctica incluyendo Latitud y Longitud
+    const {
+        fecha_limite_postulacion,
+        fecha_limite_entrega,
+        requisitos_oferta
+    } = req.body;
+
+    const queryPractica = `
+        INSERT INTO Practica (
+            rut_empresa,
+            ubicacion,
+            cargo,
+            cant_horas,
+            descripcion,
+            modalidad,
+            remuneracion,
+            latitud,
+            longitud,
+            requisitos_academicos,
+            fecha_limite_postulacion,
+            fecha_limite_entrega
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+        )
+        RETURNING id;
+    `;
+
+    const valuesPractica = [
+        rut_empresa,
+        ubicacion,
+        cargo,
+        horas,
+        descripcion,
+        modalidad,
+        remuneracion,
+        lat,
+        lon,
+        requisitos_oferta || normativa.requisitos_academicos,
+        fecha_limite_postulacion || null,
+        fecha_limite_entrega || null
+    ];
+
+    const resultPractica = await connection.query(
+        queryPractica,
+        valuesPractica
+    );
 
         // 4. Insertar las habilidades en la tabla intermedia
         if (habilidades && habilidades.length > 0) {

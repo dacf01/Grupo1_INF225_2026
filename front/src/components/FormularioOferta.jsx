@@ -46,7 +46,7 @@ const FormularioOferta = ({ volverAlHome }) => {
 
   const handleChange = (e) => {
     const { name, value } = e.target; 
-    setFormData({ ...formData, [name]: value });
+    setFormData({ ...formData, [name]: value , requisitos_oferta: '', fecha_limite_postulacion: '', fecha_limite_entrega: ''});
     if (errores[name]) setErrores({ ...errores, [name]: null });
   };
 
@@ -191,11 +191,50 @@ const FormularioOferta = ({ volverAlHome }) => {
             {/* CORRECCIÓN: type="button" evita que este botón valide o envíe el formulario */}
             <button type="button" className="volveralhome" onClick={volverAlHome}>Volver al Home</button>
           </div>
+           <div className="form-group">
+          <label className="main-label">
+             Requisitos académicos específicos
+          </label>
+          <textarea
+              name="requisitos_oferta"
+             value={formData.requisitos_oferta}
+             onChange={handleChange}
+              placeholder="Ej.: asignaturas aprobadas o requisitos del área"
+              className="form-textarea"
+            />
+          </div>
 
+          <div className="form-group">
+            <label className="main-label">
+              Fecha límite de postulación
+            </label>
+          <input
+            type="date"
+            name="fecha_limite_postulacion"
+            value={formData.fecha_limite_postulacion}
+            onChange={handleChange}
+            className="form-input"
+          />
+          </div>
+
+          <div className="form-group">
+            <label className="main-label">
+             Fecha límite de entrega
+          </label>
+            <input
+             type="date"
+             name="fecha_limite_entrega"
+             value={formData.fecha_limite_entrega}
+             onChange={handleChange}
+             className="form-input"
+              />
+          </div>
         </form>
       </div>
     </div>
   );
 };
+
+
 
 export default FormularioOferta;

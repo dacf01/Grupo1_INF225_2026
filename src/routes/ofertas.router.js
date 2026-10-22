@@ -14,3 +14,4 @@ router.put('/supervisor', asignarSupervisor);
 //router.post('/estudiante/postular',Postular);
 
 export default router;
+
