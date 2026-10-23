@@ -1,44 +1,155 @@
 import { Router } from 'express';
-import { GoogleGenAI, Type } from '@google/genai'; // Importamos Type para estructurar el JSON
-import fs from 'fs';
+import { GoogleGenAI, Type } from '@google/genai';
+import fs from 'fs/promises';
 import path from 'path';
-import connection from '../db/connection.db.js'; 
+import connection from '../db/connection.db.js';
 
 const router = Router();
 
-// Inicializamos Gemini con la API KEY guardada en tu archivo .env
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Inicializar Gemini con la API KEY definida en el archivo .env
+const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY
+});
 
+// Directorio donde se almacenan los informes.
+// Debe coincidir con la ubicación real de los archivos en el servidor Docker.
+const DIRECTORIO_UPLOADS = '/app/uploads';
+
+// Endpoint para generar el resumen de un informe mediante IA.
+// Si un id_practica corresponde a varios estudiantes, se debe enviar también el RUT.
 router.get('/ia/resumen/:id_practica', async (req, res) => {
     const { id_practica } = req.params;
+    const { rut } = req.query;
 
     try {
-        // 1. Buscamos la ruta del archivo asociada a esta práctica en la base de datos
-        const query = 'SELECT ruta_archivo FROM practica_en_proceso WHERE id_practica = $1';
-        const resultado = await connection.query(query, [id_practica]);
+        // 1. Validar la configuración de Gemini.
+        if (!process.env.GEMINI_API_KEY) {
+            console.error('No está configurada GEMINI_API_KEY.');
 
-        if (resultado.rows.length === 0 || !resultado.rows[0].ruta_archivo) {
-            return res.status(404).json({ error: 'No se encontró un informe subido para esta práctica.' });
+            return res.status(500).json({
+                error: 'El servicio de inteligencia artificial no está configurado.'
+            });
         }
 
-        const rutaRelativa = resultado.rows[0].ruta_archivo; // Ejemplo: "/uploads/informe-123.pdf"
-        
-        // 2. Construimos la ruta absoluta dentro del volumen del contenedor Docker (/app/uploads)
-        const nombreArchivo = rutaRelativa.replace('/uploads/', '');
-        const rutaAbsolutaPDF = path.join('/app/uploads', nombreArchivo);
-
-        // Validamos que el archivo realmente exista físicamente en el disco
-        if (!fs.existsSync(rutaAbsolutaPDF)) {
-            return res.status(404).json({ error: 'El archivo físico no se encuentra en el servidor.' });
+        // 2. Validar el identificador de la práctica.
+        if (!/^\d+$/.test(id_practica) || Number(id_practica) <= 0) {
+            return res.status(400).json({
+                error: 'El identificador de la práctica no es válido.'
+            });
         }
 
-        // 3. Leemos el archivo PDF y lo transformamos a Base64 (así lo recibe el SDK de Gemini de forma directa)
-        const pdfBuffer = fs.readFileSync(rutaAbsolutaPDF);
+        // 3. Buscar el informe asociado a la práctica.
+        // Cuando se proporciona el RUT, se identifica el informe del estudiante.
+        let query;
+        let parametros;
+
+        if (typeof rut === 'string' && rut.trim() !== '') {
+            query = `
+                SELECT rut, id_practica, ruta_archivo
+                FROM practica_en_proceso
+                WHERE id_practica = $1
+                  AND rut = $2
+                LIMIT 1
+            `;
+
+            parametros = [Number(id_practica), rut.trim()];
+        } else {
+            query = `
+                SELECT rut, id_practica, ruta_archivo
+                FROM practica_en_proceso
+                WHERE id_practica = $1
+                  AND ruta_archivo IS NOT NULL
+                  AND ruta_archivo <> ''
+                LIMIT 2
+            `;
+
+            parametros = [Number(id_practica)];
+        }
+
+        const resultado = await connection.query(query, parametros);
+
+        if (resultado.rows.length === 0) {
+            return res.status(404).json({
+                error: 'No se encontró un informe para la práctica y el estudiante indicados.'
+            });
+        }
+
+        // Si no se indicó el RUT y hay varios informes, no elegir uno arbitrariamente.
+        if (!rut && resultado.rows.length > 1) {
+            return res.status(400).json({
+                error: 'Esta práctica tiene varios informes. Debes identificar al estudiante.'
+            });
+        }
+
+        const informe = resultado.rows[0];
+
+        if (!informe.ruta_archivo) {
+            return res.status(404).json({
+                error: 'El estudiante no tiene un informe subido.'
+            });
+        }
+
+        // 4. Resolver la ruta del archivo dentro del directorio autorizado.
+        // Se aceptan rutas guardadas como /uploads/informe.pdf o solo informe.pdf.
+        const nombreArchivo = path.basename(
+            informe.ruta_archivo.replace(/\\/g, '/')
+        );
+
+        if (
+            !nombreArchivo ||
+            nombreArchivo === '.' ||
+            nombreArchivo === '..'
+        ) {
+            return res.status(400).json({
+                error: 'La ruta del informe no es válida.'
+            });
+        }
+
+        const rutaAbsolutaPDF = path.join(
+            DIRECTORIO_UPLOADS,
+            nombreArchivo
+        );
+
+        // 5. Leer el archivo y comprobar que sea un PDF.
+        let pdfBuffer;
+
+        try {
+            pdfBuffer = await fs.readFile(rutaAbsolutaPDF);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({
+                    error: 'El archivo del informe no se encuentra en el servidor.'
+                });
+            }
+
+            throw error;
+        }
+
+        // Validación básica de la firma del PDF.
+        if (
+            pdfBuffer.length < 5 ||
+            pdfBuffer.subarray(0, 5).toString('ascii') !== '%PDF-'
+        ) {
+            return res.status(400).json({
+                error: 'El archivo almacenado no es un PDF válido.'
+            });
+        }
+
+        // Evitar procesar documentos excesivamente grandes.
+        const TAMANO_MAXIMO = 20 * 1024 * 1024;
+
+        if (pdfBuffer.length > TAMANO_MAXIMO) {
+            return res.status(413).json({
+                error: 'El informe supera el tamaño máximo permitido de 20 MB.'
+            });
+        }
+
         const pdfBase64 = pdfBuffer.toString('base64');
 
-        // 4. Llamamos a gemini-2.5-flash forzando una respuesta JSON con estructura predecible
+        // 6. Enviar el informe a Gemini y solicitar un resumen estructurado.
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
+
             contents: [
                 {
                     inlineData: {
@@ -46,45 +157,120 @@ router.get('/ia/resumen/:id_practica', async (req, res) => {
                         data: pdfBase64
                     }
                 },
-                "Eres un asistente académico experto de la USM. Analiza minuciosamente el informe de práctica profesional adjunto. Extrae con la mayor precisión posible las horas de práctica registradas, las áreas o departamentos de la empresa donde trabajó el alumno, y elabora una síntesis directa de las actividades y proyectos que ejecutó durante su estadía."
+                {
+                    text: `
+                        Eres un asistente académico encargado de analizar
+                        informes de práctica profesional de una universidad.
+
+                        Analiza el documento adjunto y devuelve información
+                        exclusivamente basada en su contenido.
+
+                        Instrucciones:
+                        - No inventes información ni completes datos ausentes
+                          mediante suposiciones.
+                        - Si un dato no aparece o no puede determinarse con
+                          seguridad, devuelve una cadena vacía para ese campo.
+                        - Extrae el RUT del estudiante tal como aparece
+                          en el documento.
+                        - Identifica el nombre de la empresa o institución.
+                        - Identifica las horas de práctica explícitamente
+                          declaradas en el informe.
+                        - No confundas las horas de práctica con horas de
+                          asignaturas, capacitaciones u otras actividades.
+                        - Resume las principales actividades, proyectos,
+                          herramientas utilizadas y aportes del estudiante.
+                        - Redacta el resumen ejecutivo en español formal,
+                          de manera clara, objetiva y coherente.
+                        - No afirmes que las horas, la identidad o los datos
+                          institucionales han sido verificados externamente.
+                        - Si existen contradicciones en el documento,
+                          indícalas en observaciones.
+
+                        Devuelve los campos solicitados con la estructura
+                        JSON definida.
+                    `
+                }
             ],
+
             config: {
-                // Configuramos el comportamiento para asegurar formato estructurado
-                responseMimeType: "application/json",
+                responseMimeType: 'application/json',
+
                 responseSchema: {
                     type: Type.OBJECT,
+
                     properties: {
-                        rut_detectado: { 
-                            type: Type.STRING, 
-                            description: "El RUT del estudiante escrito dentro del documento PDF (ej: 12.345.678-9)." 
+                        rut_detectado: {
+                            type: Type.STRING,
+                            description: 'RUT del estudiante identificado en el informe. Cadena vacía si no aparece.'
                         },
-                        empresa_detectada: { 
-                            type: Type.STRING, 
-                            description: "Nombre de la empresa o institución donde se llevó a cabo la práctica." 
+
+                        empresa_detectada: {
+                            type: Type.STRING,
+                            description: 'Nombre de la empresa o institución identificada en el informe. Cadena vacía si no aparece.'
                         },
-                        horas_detectadas: { 
-                            type: Type.STRING, 
-                            description: "Cantidad total de horas trabajadas o declaradas que se mencionen en el informe." 
+
+                        horas_detectadas: {
+                            type: Type.STRING,
+                            description: 'Cantidad de horas de práctica explícitamente declaradas en el documento. Cadena vacía si no se puede determinar.'
                         },
-                        resumen_ejecutivo: { 
-                            type: Type.STRING, 
-                            description: "Un texto fluido de un párrafo que actúe como resumen de contenido del informe, detallando proyectos, herramientas y aportes clave." 
+
+                        resumen_ejecutivo: {
+                            type: Type.STRING,
+                            description: 'Resumen de las actividades, proyectos, herramientas y aportes principales del estudiante.'
+                        },
+
+                        observaciones: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.STRING
+                            },
+                            description: 'Advertencias sobre información ausente, ambigua o contradictoria en el informe.'
                         }
                     },
-                    required: ["rut_detectado", "empresa_detectada", "horas_detectadas", "resumen_ejecutivo"],
+
+                    required: [
+                        'rut_detectado',
+                        'empresa_detectada',
+                        'horas_detectadas',
+                        'resumen_ejecutivo',
+                        'observaciones'
+                    ]
                 }
             }
         });
 
-        // 5. Transformamos el string JSON de Gemini en un objeto real de JavaScript
-        const datosIA = JSON.parse(response.text);
+        // 7. Validar la respuesta generada por Gemini.
+        if (!response.text) {
+            return res.status(502).json({
+                error: 'La IA no generó una respuesta para el informe.'
+            });
+        }
 
-        // 6. Respondemos con todo el objeto estructurado listo para tu frontend
-        return res.status(200).json(datosIA);
+        let datosIA;
+
+        try {
+            datosIA = JSON.parse(response.text);
+        } catch (error) {
+            console.error('La IA devolvió una respuesta JSON inválida:', error);
+
+            return res.status(502).json({
+                error: 'No fue posible interpretar la respuesta de la IA.'
+            });
+        }
+
+        // 8. Responder con el resumen estructurado para el frontend.
+        return res.status(200).json({
+            id_practica: Number(informe.id_practica),
+            rut_estudiante: informe.rut,
+            ...datosIA
+        });
 
     } catch (error) {
-        console.error('Error al generar el resumen con IA:', error);
-        return res.status(500).json({ error: 'Ocurrió un error al procesar el documento con Inteligencia Artificial.' });
+        console.error('Error al procesar el informe mediante IA:', error);
+
+        return res.status(500).json({
+            error: 'Ocurrió un error al procesar el informe mediante inteligencia artificial.'
+        });
     }
 });
 
